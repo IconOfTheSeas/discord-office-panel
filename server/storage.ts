@@ -1,0 +1,240 @@
+import { User, InsertUser, Office, InsertOffice, OfficeMember, InsertOfficeMember } from "@shared/schema";
+
+export interface IStorage {
+  // User methods
+  getUserById(id: string): Promise<User | undefined>;
+  createUser(user: InsertUser): Promise<User>;
+  updateUser(id: string, updates: Partial<User>): Promise<User>;
+  userHasOffice(userId: string): Promise<boolean>;
+
+  // Office methods
+  getAllOffices(): Promise<Office[]>;
+  getOfficeById(id: number): Promise<Office | undefined>;
+  getUserOffice(userId: string): Promise<Office | undefined>;
+  getAvailableOffices(userId: string): Promise<Office[]>;
+  createOffice(office: InsertOffice): Promise<Office>;
+  updateOffice(id: number, updates: Partial<Office>): Promise<Office>;
+  deleteOffice(id: number): Promise<void>;
+
+  // Office member methods
+  getOfficeMembers(officeId: number): Promise<OfficeMember[]>;
+  isOfficeMember(officeId: number, userId: string): Promise<boolean>;
+  addOfficeMember(member: InsertOfficeMember): Promise<OfficeMember>;
+  removeOfficeMember(officeId: number, userId: string): Promise<void>;
+}
+
+export class MemStorage implements IStorage {
+  private users: Map<string, User>;
+  private offices: Map<number, Office>;
+  private officeMembers: Map<string, OfficeMember>; // key: `${officeId}:${userId}`
+  private currentOfficeId: number;
+
+  constructor() {
+    this.users = new Map();
+    this.offices = new Map();
+    this.officeMembers = new Map();
+    this.currentOfficeId = 1;
+  }
+
+  // User methods
+  async getUserById(id: string): Promise<User | undefined> {
+    return this.users.get(id);
+  }
+
+  async createUser(user: InsertUser): Promise<User> {
+    const newUser: User = {
+      ...user,
+    };
+    this.users.set(newUser.id, newUser);
+    return newUser;
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User> {
+    const user = this.users.get(id);
+    if (!user) {
+      throw new Error(`User with ID ${id} not found`);
+    }
+
+    const updatedUser: User = {
+      ...user,
+      ...updates,
+    };
+    this.users.set(id, updatedUser);
+    return updatedUser;
+  }
+
+  async userHasOffice(userId: string): Promise<boolean> {
+    // Check if user is an owner of any office
+    for (const office of this.offices.values()) {
+      if (office.ownerId === userId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Office methods
+  async getAllOffices(): Promise<Office[]> {
+    const offices = Array.from(this.offices.values());
+    
+    // Enrich offices with owner and member count
+    return Promise.all(
+      offices.map(async (office) => {
+        const owner = this.users.get(office.ownerId);
+        const members = await this.getOfficeMembers(office.id);
+        
+        return {
+          ...office,
+          owner: owner || { 
+            id: office.ownerId, 
+            username: "Unknown", 
+            discriminator: "0000",
+            isAdmin: false
+          },
+          members,
+          memberCount: members.length,
+        };
+      })
+    );
+  }
+
+  async getOfficeById(id: number): Promise<Office | undefined> {
+    const office = this.offices.get(id);
+    if (!office) return undefined;
+    
+    const owner = this.users.get(office.ownerId);
+    const members = await this.getOfficeMembers(id);
+    
+    return {
+      ...office,
+      owner: owner || { 
+        id: office.ownerId, 
+        username: "Unknown", 
+        discriminator: "0000",
+        isAdmin: false
+      },
+      members,
+      memberCount: members.length,
+    };
+  }
+
+  async getUserOffice(userId: string): Promise<Office | undefined> {
+    // Find office where user is an owner or member
+    const offices = await this.getAllOffices();
+    
+    return offices.find(
+      (office) => 
+        office.ownerId === userId || 
+        office.members.some(member => member.userId === userId)
+    );
+  }
+
+  async getAvailableOffices(userId: string): Promise<Office[]> {
+    const allOffices = await this.getAllOffices();
+    
+    // Get offices that are either public or where the user is already a member
+    return allOffices.filter(
+      (office) => 
+        !office.isPrivate || 
+        office.members.some(member => member.userId === userId)
+    );
+  }
+
+  async createOffice(office: InsertOffice): Promise<Office> {
+    const id = this.currentOfficeId++;
+    
+    const newOffice: Office = {
+      ...office,
+      id,
+      status: "active",
+      createdAt: new Date(),
+      owner: { id: "", username: "", discriminator: "", isAdmin: false },
+      members: [],
+      memberCount: 0,
+    };
+    
+    this.offices.set(id, newOffice);
+    
+    // Get enriched office
+    return this.getOfficeById(id) as Promise<Office>;
+  }
+
+  async updateOffice(id: number, updates: Partial<Office>): Promise<Office> {
+    const office = this.offices.get(id);
+    if (!office) {
+      throw new Error(`Office with ID ${id} not found`);
+    }
+
+    const updatedOffice: Office = {
+      ...office,
+      ...updates,
+      owner: office.owner || { id: "", username: "", discriminator: "", isAdmin: false },
+      members: [],
+      memberCount: 0,
+    };
+    
+    this.offices.set(id, updatedOffice);
+    
+    // Get enriched office
+    return this.getOfficeById(id) as Promise<Office>;
+  }
+
+  async deleteOffice(id: number): Promise<void> {
+    // Delete all members first
+    const officeMembers = await this.getOfficeMembers(id);
+    for (const member of officeMembers) {
+      await this.removeOfficeMember(id, member.userId);
+    }
+    
+    // Delete the office
+    this.offices.delete(id);
+  }
+
+  // Office member methods
+  async getOfficeMembers(officeId: number): Promise<OfficeMember[]> {
+    const members: OfficeMember[] = [];
+    
+    for (const [key, member] of this.officeMembers.entries()) {
+      if (member.officeId === officeId) {
+        const user = this.users.get(member.userId);
+        if (user) {
+          members.push({
+            ...member,
+            user,
+          });
+        }
+      }
+    }
+    
+    return members;
+  }
+
+  async isOfficeMember(officeId: number, userId: string): Promise<boolean> {
+    return this.officeMembers.has(`${officeId}:${userId}`);
+  }
+
+  async addOfficeMember(member: InsertOfficeMember): Promise<OfficeMember> {
+    const newMember: OfficeMember = {
+      ...member,
+      id: 0,
+      joinedAt: new Date(),
+      user: { id: "", username: "", discriminator: "", isAdmin: false },
+    };
+    
+    this.officeMembers.set(`${member.officeId}:${member.userId}`, newMember);
+    
+    // Get the user
+    const user = this.users.get(member.userId);
+    if (user) {
+      newMember.user = user;
+    }
+    
+    return newMember;
+  }
+
+  async removeOfficeMember(officeId: number, userId: string): Promise<void> {
+    this.officeMembers.delete(`${officeId}:${userId}`);
+  }
+}
+
+export const storage = new MemStorage();
