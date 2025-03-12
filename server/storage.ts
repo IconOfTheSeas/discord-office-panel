@@ -182,16 +182,16 @@ export class MemStorage implements IStorage {
       // Use VC_CATEGORY_ID from environment if available
       const categoryId = process.env.VC_CATEGORY_ID;
       
-      // Create a voice channel with the office name
-      const channelId = await discordModule.createVoiceChannel(`Office-${newOffice.name}`, categoryId);
+      // Create a voice channel with just the office name (no Office- prefix)
+      const channelId = await discordModule.createVoiceChannel(`${newOffice.name}`, categoryId);
       
       // Update the office with the channel ID
       newOffice.voiceChannelId = channelId;
       this.offices.set(id, newOffice);
       
-      console.log(`Created voice channel for office ${newOffice.name} with ID ${channelId}`);
+      console.log(`Created voice channel for ${newOffice.name} with ID ${channelId}`);
     } catch (error) {
-      console.error(`Failed to create voice channel for office ${newOffice.name}:`, error);
+      console.error(`Failed to create voice channel for ${newOffice.name}:`, error);
       // Continue even if voice channel creation fails
     }
     
@@ -228,12 +228,12 @@ export class MemStorage implements IStorage {
         // Update the voice channel name
         await discordModule.updateVoiceChannelName(
           office.voiceChannelId, 
-          `Office-${updates.name}`
+          `${updates.name}`
         );
         
-        console.log(`Updated voice channel name for office ${updates.name} with ID ${office.voiceChannelId}`);
+        console.log(`Updated voice channel name for ${updates.name} with ID ${office.voiceChannelId}`);
       } catch (error) {
-        console.error(`Failed to update voice channel name for office ${updates.name}:`, error);
+        console.error(`Failed to update voice channel name for ${updates.name}:`, error);
         // Continue even if voice channel update fails
       }
     }
@@ -565,7 +565,7 @@ export class DatabaseStorage implements IStorage {
         .where(eq(offices.id, createdOffice.id))
         .returning();
       
-      console.log(`Created voice channel for office ${updatedOffice.name} with ID ${channelId}`);
+      console.log(`Created voice channel for ${updatedOffice.name} with ID ${channelId}`);
       
       // Add the owner as an office member with isOwner=true
       await this.addOfficeMember({
@@ -577,7 +577,7 @@ export class DatabaseStorage implements IStorage {
       // Return the enriched office
       return this.getOfficeById(updatedOffice.id) as Promise<Office>;
     } catch (error) {
-      console.error(`Failed to create voice channel for office ${createdOffice.name}:`, error);
+      console.error(`Failed to create voice channel for ${createdOffice.name}:`, error);
       
       // Add the owner as an office member even if voice channel creation fails
       await this.addOfficeMember({
@@ -618,12 +618,12 @@ export class DatabaseStorage implements IStorage {
         // Update the voice channel name
         await discordModule.updateVoiceChannelName(
           office.voiceChannelId, 
-          `Office-${updates.name}`
+          `${updates.name}`
         );
         
-        console.log(`Updated voice channel name for office ${updates.name} with ID ${office.voiceChannelId}`);
+        console.log(`Updated voice channel name for ${updates.name} with ID ${office.voiceChannelId}`);
       } catch (error) {
-        console.error(`Failed to update voice channel name for office ${updates.name}:`, error);
+        console.error(`Failed to update voice channel name for ${updates.name}:`, error);
         // Continue even if voice channel update fails
       }
     }
