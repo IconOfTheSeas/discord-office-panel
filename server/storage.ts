@@ -555,8 +555,8 @@ export class DatabaseStorage implements IStorage {
       // Use VC_CATEGORY_ID from environment if available
       const categoryId = process.env.VC_CATEGORY_ID;
       
-      // Create a voice channel with the office name
-      const channelId = await discordModule.createVoiceChannel(`Office-${createdOffice.name}`, categoryId);
+      // Create a voice channel with just the office name
+      const channelId = await discordModule.createVoiceChannel(`${createdOffice.name}`, categoryId);
       
       // Update the office with the channel ID
       const [updatedOffice] = await db
