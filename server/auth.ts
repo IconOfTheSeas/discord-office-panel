@@ -2,6 +2,16 @@ import { Express } from "express";
 import session from "express-session";
 import { storage } from "./storage";
 import { getDiscordUser, getGuildMember, getMemberRoles } from "./discord";
+import createMemoryStore from "memorystore";
+
+// Extend the Express Session type to include userId
+declare module 'express-session' {
+  interface SessionData {
+    userId: string;
+  }
+}
+
+const MemoryStore = createMemoryStore(session);
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
@@ -13,28 +23,30 @@ if (!CLIENT_ID || !CLIENT_SECRET || !GUILD_ID) {
 }
 
 export function setupAuth(app: Express) {
-  // Set up session middleware
+  // Set up session middleware with memory store
   app.use(
     session({
+      store: new MemoryStore({
+        checkPeriod: 86400000 // prune expired entries every 24h
+      }),
       secret: process.env.SESSION_SECRET || "discord-office-panel-secret",
-      resave: false,
+      resave: true,
       saveUninitialized: false,
       cookie: {
         maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
-        secure: true,
-        httpOnly: true,
-        sameSite: "none"
+        secure: false,  // Set to false to make cookies work easier in Replit environment
+        httpOnly: true
       },
     })
   );
 
   // Discord OAuth login route
   app.get("/api/auth/login", (req, res) => {
-    const scope = "identify guilds";
+    const scope = "identify guilds guilds.members.read";
     res.redirect(
       `https://discord.com/api/oauth2/authorize?client_id=${CLIENT_ID}&redirect_uri=${encodeURIComponent(
         REDIRECT_URI
-      )}&response_type=code&scope=${encodeURIComponent(scope)}`
+      )}&response_type=code&scope=${encodeURIComponent(scope)}&prompt=consent`
     );
   });
 
@@ -48,18 +60,19 @@ export function setupAuth(app: Express) {
 
     try {
       // Exchange code for access token
+      const params = new URLSearchParams();
+      params.append("client_id", CLIENT_ID || "");
+      params.append("client_secret", CLIENT_SECRET || "");
+      params.append("grant_type", "authorization_code");
+      params.append("code", code.toString());
+      params.append("redirect_uri", REDIRECT_URI);
+      
       const tokenResponse = await fetch("https://discord.com/api/oauth2/token", {
         method: "POST",
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
         },
-        body: new URLSearchParams({
-          client_id: CLIENT_ID,
-          client_secret: CLIENT_SECRET,
-          grant_type: "authorization_code",
-          code: code.toString(),
-          redirect_uri: REDIRECT_URI,
-        }),
+        body: params,
       });
 
       if (!tokenResponse.ok) {
@@ -130,8 +143,23 @@ export function setupAuth(app: Express) {
         });
       }
 
-      // Set user ID in session
+      // Set user ID in session and save it explicitly
       req.session.userId = user.id;
+      
+      // Save the session explicitly
+      await new Promise<void>((resolve, reject) => {
+        req.session.save((err) => {
+          if (err) {
+            console.error("Error saving session:", err);
+            reject(err);
+          } else {
+            resolve();
+          }
+        });
+      });
+      
+      // Debug output
+      console.log("Session saved successfully:", req.session.id, "for user:", user.id);
       
       // Redirect to home page
       res.redirect("/");
