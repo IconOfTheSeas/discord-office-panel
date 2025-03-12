@@ -5,7 +5,7 @@ import { getDiscordUser, getGuildMember, getMemberRoles } from "./discord";
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const REDIRECT_URI = process.env.REDIRECT_URI || "http://localhost:5000/api/auth/callback";
+const REDIRECT_URI = process.env.REDIRECT_URI || "https://f9c965f8-8b43-4148-8db8-a8814238be9a-00-2fxa2sqwglwi5.picard.replit.dev/api/auth/callback";
 const GUILD_ID = process.env.GUILD_ID;
 
 if (!CLIENT_ID || !CLIENT_SECRET || !GUILD_ID) {
@@ -21,8 +21,9 @@ export function setupAuth(app: Express) {
       saveUninitialized: false,
       cookie: {
         maxAge: 7 * 24 * 60 * 60 * 1000, // 1 week
-        secure: process.env.NODE_ENV === "production",
+        secure: true,
         httpOnly: true,
+        sameSite: "none"
       },
     })
   );
