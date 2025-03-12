@@ -23,6 +23,7 @@ export const offices = pgTable("offices", {
   ownerId: text("owner_id").notNull().references(() => users.id),
   status: text("status").default("active").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  voiceChannelId: text("voice_channel_id"),
 });
 
 // Office members

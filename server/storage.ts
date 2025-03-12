@@ -143,6 +143,7 @@ export class MemStorage implements IStorage {
   async createOffice(office: InsertOffice): Promise<Office> {
     const id = this.currentOfficeId++;
     
+    // Create office in local storage
     const newOffice: Office = {
       ...office,
       id,
@@ -151,9 +152,31 @@ export class MemStorage implements IStorage {
       owner: { id: "", username: "", discriminator: "", isAdmin: false },
       members: [],
       memberCount: 0,
+      voiceChannelId: null, // Will be filled after creation
     };
     
     this.offices.set(id, newOffice);
+    
+    // Create the voice channel on Discord
+    try {
+      // Import here to avoid circular dependency
+      const { createVoiceChannel } = require('./discord');
+      
+      // Use VC_CATEGORY_ID from environment if available
+      const categoryId = process.env.VC_CATEGORY_ID;
+      
+      // Create a voice channel with the office name
+      const channelId = await createVoiceChannel(`Office-${newOffice.name}`, categoryId);
+      
+      // Update the office with the channel ID
+      newOffice.voiceChannelId = channelId;
+      this.offices.set(id, newOffice);
+      
+      console.log(`Created voice channel for office ${newOffice.name} with ID ${channelId}`);
+    } catch (error) {
+      console.error(`Failed to create voice channel for office ${newOffice.name}:`, error);
+      // Continue even if voice channel creation fails
+    }
     
     // Get enriched office
     return this.getOfficeById(id) as Promise<Office>;
@@ -180,10 +203,28 @@ export class MemStorage implements IStorage {
   }
 
   async deleteOffice(id: number): Promise<void> {
+    // Get the office to access the voice channel ID
+    const office = this.offices.get(id);
+    
     // Delete all members first
     const officeMembers = await this.getOfficeMembers(id);
     for (const member of officeMembers) {
       await this.removeOfficeMember(id, member.userId);
+    }
+    
+    // Delete the Discord voice channel if it exists
+    if (office && office.voiceChannelId) {
+      try {
+        // Import here to avoid circular dependency
+        const { deleteVoiceChannel } = require('./discord');
+        
+        // Delete the voice channel
+        await deleteVoiceChannel(office.voiceChannelId);
+        console.log(`Deleted voice channel for office ${office.name} with ID ${office.voiceChannelId}`);
+      } catch (error) {
+        console.error(`Failed to delete voice channel for office ${office?.name}:`, error);
+        // Continue even if voice channel deletion fails
+      }
     }
     
     // Delete the office
