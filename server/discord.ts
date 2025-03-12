@@ -88,10 +88,22 @@ export async function fetchGuildMembers(): Promise<DiscordGuildMember[]> {
 
 // Create a voice channel for an office
 export async function createVoiceChannel(name: string, categoryId: string | undefined): Promise<string> {
+  // Discord permission flags
+  // CONNECT = 1 << 20 (1048576)
+  // SPEAK = 1 << 21 (2097152)
+  // 1048576 + 2097152 = 3145728 (deny both connect and speak)
+  
   const payload: any = {
     name,
     type: 2, // Voice channel
-    permission_overwrites: [], // Default permissions
+    permission_overwrites: [
+      {
+        id: GUILD_ID, // @everyone role has the same ID as the guild
+        type: 0, // 0 for role, 1 for member
+        allow: "0",
+        deny: "3145728" // Deny connect (1048576) and speak (2097152) permissions
+      }
+    ]
   };
 
   if (categoryId) {
@@ -133,9 +145,16 @@ export async function deleteVoiceChannel(channelId: string): Promise<void> {
 export async function updateChannelPermissions(
   channelId: string,
   userId: string,
-  allow: number,
-  deny: number
+  allow: number = 0,
+  deny: number = 0
 ): Promise<void> {
+  // Default permissions for office members:
+  // Allow CONNECT (1048576) and SPEAK (2097152)
+  const defaultAllow = 3145728; // 1048576 + 2097152
+  
+  // Use provided permissions or defaults
+  const finalAllow = allow || defaultAllow;
+  
   const response = await fetch(
     `https://discord.com/api/channels/${channelId}/permissions/${userId}`,
     {
@@ -145,7 +164,7 @@ export async function updateChannelPermissions(
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        allow: allow.toString(),
+        allow: finalAllow.toString(),
         deny: deny.toString(),
         type: 1, // 1 for member, 0 for role
       }),
@@ -153,6 +172,7 @@ export async function updateChannelPermissions(
   );
 
   if (!response.ok) {
-    throw new Error(`Failed to update channel permissions: ${response.statusText}`);
+    const errorText = await response.text();
+    throw new Error(`Failed to update channel permissions: ${response.statusText}. Details: ${errorText}`);
   }
 }
