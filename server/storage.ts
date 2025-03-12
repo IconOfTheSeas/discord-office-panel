@@ -1,4 +1,9 @@
-import { User, InsertUser, Office, InsertOffice, OfficeMember, InsertOfficeMember } from "@shared/schema";
+import { 
+  User, InsertUser, Office, InsertOffice, OfficeMember, InsertOfficeMember,
+  users, offices, officeMembers
+} from "@shared/schema";
+import { db } from "./db";
+import { eq, and, ne } from "drizzle-orm";
 
 export interface IStorage {
   // User methods
@@ -44,6 +49,11 @@ export class MemStorage implements IStorage {
   async createUser(user: InsertUser): Promise<User> {
     const newUser: User = {
       ...user,
+      avatar: user.avatar || null,
+      isAdmin: user.isAdmin || false,
+      accessToken: null,
+      refreshToken: null,
+      tokenExpiry: null
     };
     this.users.set(newUser.id, newUser);
     return newUser;
@@ -89,7 +99,11 @@ export class MemStorage implements IStorage {
             id: office.ownerId, 
             username: "Unknown", 
             discriminator: "0000",
-            isAdmin: false
+            isAdmin: false,
+            avatar: null,
+            accessToken: null,
+            refreshToken: null,
+            tokenExpiry: null
           },
           members,
           memberCount: members.length,
@@ -105,17 +119,23 @@ export class MemStorage implements IStorage {
     const owner = this.users.get(office.ownerId);
     const members = await this.getOfficeMembers(id);
     
-    return {
+    const enrichedOffice = {
       ...office,
       owner: owner || { 
         id: office.ownerId, 
         username: "Unknown", 
         discriminator: "0000",
-        isAdmin: false
+        isAdmin: false,
+        avatar: null,
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiry: null
       },
       members,
       memberCount: members.length,
     };
+    
+    return enrichedOffice;
   }
 
   async getUserOffice(userId: string): Promise<Office | undefined> {
@@ -143,16 +163,13 @@ export class MemStorage implements IStorage {
   async createOffice(office: InsertOffice): Promise<Office> {
     const id = this.currentOfficeId++;
     
-    // Create office in local storage
-    const newOffice: Office = {
+    const newOffice = {
       ...office,
       id,
       status: "active",
       createdAt: new Date(),
-      owner: { id: "", username: "", discriminator: "", isAdmin: false },
-      members: [],
-      memberCount: 0,
-      voiceChannelId: null, // Will be filled after creation
+      voiceChannelId: null as string | null, // Will be filled after creation
+      description: office.description || null,
     };
     
     this.offices.set(id, newOffice);
@@ -178,6 +195,13 @@ export class MemStorage implements IStorage {
       // Continue even if voice channel creation fails
     }
     
+    // Add the owner as an office member
+    await this.addOfficeMember({
+      officeId: id,
+      userId: office.ownerId,
+      isOwner: true
+    });
+    
     // Get enriched office
     return this.getOfficeById(id) as Promise<Office>;
   }
@@ -188,12 +212,9 @@ export class MemStorage implements IStorage {
       throw new Error(`Office with ID ${id} not found`);
     }
 
-    const updatedOffice: Office = {
+    const updatedOffice = {
       ...office,
       ...updates,
-      owner: office.owner || { id: "", username: "", discriminator: "", isAdmin: false },
-      members: [],
-      memberCount: 0,
     };
     
     this.offices.set(id, updatedOffice);
@@ -258,10 +279,11 @@ export class MemStorage implements IStorage {
       if (member.officeId === officeId) {
         const user = this.users.get(member.userId);
         if (user) {
-          members.push({
+          const enrichedMember = {
             ...member,
             user,
-          });
+          };
+          members.push(enrichedMember);
         }
       }
     }
@@ -274,20 +296,31 @@ export class MemStorage implements IStorage {
   }
 
   async addOfficeMember(member: InsertOfficeMember): Promise<OfficeMember> {
-    const newMember: OfficeMember = {
+    const newMember = {
       ...member,
       id: 0,
       joinedAt: new Date(),
-      user: { id: "", username: "", discriminator: "", isAdmin: false },
     };
     
-    this.officeMembers.set(`${member.officeId}:${member.userId}`, newMember);
+    this.officeMembers.set(`${member.officeId}:${member.userId}`, newMember as OfficeMember);
     
     // Get the user
     const user = this.users.get(member.userId);
-    if (user) {
-      newMember.user = user;
-    }
+    
+    // Create enriched member
+    const enrichedMember = {
+      ...newMember,
+      user: user || { 
+        id: member.userId, 
+        username: "Unknown", 
+        discriminator: "0000",
+        isAdmin: false,
+        avatar: null,
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiry: null
+      }
+    };
     
     // Grant permission to the voice channel if it exists
     try {
@@ -305,7 +338,7 @@ export class MemStorage implements IStorage {
       // Continue even if permission update fails
     }
     
-    return newMember;
+    return enrichedMember;
   }
 
   async removeOfficeMember(officeId: number, userId: string): Promise<void> {
@@ -337,9 +370,6 @@ export class MemStorage implements IStorage {
   }
 }
 
-import { db } from "./db";
-import { eq, and, ne } from "drizzle-orm";
-
 export class DatabaseStorage implements IStorage {
   // User methods
   async getUserById(id: string): Promise<User | undefined> {
@@ -348,7 +378,17 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createUser(user: InsertUser): Promise<User> {
-    const [createdUser] = await db.insert(users).values(user).returning();
+    // Ensure required fields have values
+    const userToInsert = {
+      ...user,
+      avatar: user.avatar || null,
+      isAdmin: user.isAdmin || false,
+      accessToken: user.accessToken || null,
+      refreshToken: user.refreshToken || null,
+      tokenExpiry: user.tokenExpiry || null
+    };
+    
+    const [createdUser] = await db.insert(users).values(userToInsert).returning();
     return createdUser;
   }
 
@@ -387,7 +427,11 @@ export class DatabaseStorage implements IStorage {
             id: office.ownerId, 
             username: 'Unknown', 
             discriminator: '0000',
-            isAdmin: false
+            isAdmin: false,
+            avatar: null,
+            accessToken: null,
+            refreshToken: null,
+            tokenExpiry: null
           },
           members,
           memberCount: members.length
@@ -417,7 +461,11 @@ export class DatabaseStorage implements IStorage {
         id: office.ownerId, 
         username: 'Unknown', 
         discriminator: '0000',
-        isAdmin: false
+        isAdmin: false,
+        avatar: null,
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiry: null
       },
       members,
       memberCount: members.length
@@ -474,7 +522,11 @@ export class DatabaseStorage implements IStorage {
             id: office.ownerId, 
             username: 'Unknown', 
             discriminator: '0000',
-            isAdmin: false
+            isAdmin: false,
+            avatar: null,
+            accessToken: null,
+            refreshToken: null,
+            tokenExpiry: null
           },
           members,
           memberCount: members.length
@@ -489,7 +541,10 @@ export class DatabaseStorage implements IStorage {
     // Create the office in the database
     const [createdOffice] = await db
       .insert(offices)
-      .values(office)
+      .values({
+        ...office,
+        description: office.description || null
+      })
       .returning();
     
     // Create the voice channel on Discord
@@ -632,7 +687,11 @@ export class DatabaseStorage implements IStorage {
             id: member.userId, 
             username: 'Unknown', 
             discriminator: '0000',
-            isAdmin: false
+            isAdmin: false,
+            avatar: null,
+            accessToken: null,
+            refreshToken: null,
+            tokenExpiry: null
           }
         };
       })
@@ -692,7 +751,11 @@ export class DatabaseStorage implements IStorage {
         id: member.userId, 
         username: 'Unknown', 
         discriminator: '0000',
-        isAdmin: false
+        isAdmin: false,
+        avatar: null,
+        accessToken: null,
+        refreshToken: null,
+        tokenExpiry: null
       }
     };
   }
