@@ -159,14 +159,14 @@ export class MemStorage implements IStorage {
     
     // Create the voice channel on Discord
     try {
-      // Import here to avoid circular dependency
-      const { createVoiceChannel } = require('./discord');
+      // Import discord functions dynamically to avoid circular dependency
+      const discordModule = await import('./discord');
       
       // Use VC_CATEGORY_ID from environment if available
       const categoryId = process.env.VC_CATEGORY_ID;
       
       // Create a voice channel with the office name
-      const channelId = await createVoiceChannel(`Office-${newOffice.name}`, categoryId);
+      const channelId = await discordModule.createVoiceChannel(`Office-${newOffice.name}`, categoryId);
       
       // Update the office with the channel ID
       newOffice.voiceChannelId = channelId;
@@ -215,11 +215,11 @@ export class MemStorage implements IStorage {
     // Delete the Discord voice channel if it exists
     if (office && office.voiceChannelId) {
       try {
-        // Import here to avoid circular dependency
-        const { deleteVoiceChannel } = require('./discord');
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
         
         // Delete the voice channel
-        await deleteVoiceChannel(office.voiceChannelId);
+        await discordModule.deleteVoiceChannel(office.voiceChannelId);
         console.log(`Deleted voice channel for office ${office.name} with ID ${office.voiceChannelId}`);
       } catch (error) {
         console.error(`Failed to delete voice channel for office ${office?.name}:`, error);
@@ -270,10 +270,50 @@ export class MemStorage implements IStorage {
       newMember.user = user;
     }
     
+    // Grant permission to the voice channel if it exists
+    try {
+      const office = await this.getOfficeById(member.officeId);
+      if (office && office.voiceChannelId) {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Allow the user to connect and speak in the voice channel
+        await discordModule.updateChannelPermissions(office.voiceChannelId, member.userId);
+        console.log(`Granted voice permissions to user ${member.userId} for office ${office.name}`);
+      }
+    } catch (error) {
+      console.error(`Failed to update voice channel permissions for user ${member.userId}:`, error);
+      // Continue even if permission update fails
+    }
+    
     return newMember;
   }
 
   async removeOfficeMember(officeId: number, userId: string): Promise<void> {
+    // Revoke permissions from the voice channel if it exists
+    try {
+      const office = await this.getOfficeById(officeId);
+      if (office && office.voiceChannelId) {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Explicitly deny connect and speak permissions for the removed user
+        // For deny, we want to deny CONNECT (1 << 20 = 1048576) and SPEAK (1 << 21 = 2097152)
+        // 1048576 + 2097152 = 3145728
+        await discordModule.updateChannelPermissions(
+          office.voiceChannelId, 
+          userId,
+          0, // No allows
+          3145728 // Deny connect and speak
+        );
+        console.log(`Revoked voice permissions from user ${userId} for office ${office.name}`);
+      }
+    } catch (error) {
+      console.error(`Failed to update voice channel permissions for user ${userId}:`, error);
+      // Continue even if permission update fails
+    }
+    
+    // Remove the member from the office
     this.officeMembers.delete(`${officeId}:${userId}`);
   }
 }
