@@ -141,6 +141,28 @@ export async function deleteVoiceChannel(channelId: string): Promise<void> {
   }
 }
 
+// Update voice channel name
+export async function updateVoiceChannelName(
+  channelId: string,
+  newName: string
+): Promise<void> {
+  const response = await fetch(`https://discord.com/api/channels/${channelId}`, {
+    method: "PATCH",
+    headers: {
+      Authorization: `Bot ${BOT_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: newName,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Failed to update voice channel name: ${response.statusText}. Details: ${errorText}`);
+  }
+}
+
 // Update channel permissions for a user
 export async function updateChannelPermissions(
   channelId: string,

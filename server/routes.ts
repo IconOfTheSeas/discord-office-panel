@@ -387,10 +387,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(400).json({ message: "User ID is required" });
     }
 
-    // Check if target user exists
-    const targetUser = await storage.getUserById(userId);
+    // Check if target user exists in our database
+    let targetUser = await storage.getUserById(userId);
+    
+    // If not in our database, let's try to fetch them from Discord
     if (!targetUser) {
-      return res.status(404).json({ message: "Target user not found" });
+      try {
+        // Try to fetch the user from Discord using the bot
+        const discordMember = await getGuildMember(userId);
+        
+        if (discordMember && discordMember.user) {
+          // Create the user in our database
+          targetUser = await storage.createUser({
+            id: discordMember.user.id,
+            username: discordMember.user.username,
+            discriminator: discordMember.user.discriminator || '0',
+            avatar: discordMember.user.avatar,
+            isAdmin: false
+          });
+          console.log(`Created new user ${targetUser.username} from Discord data`);
+        } else {
+          return res.status(404).json({ message: "Target user not found on Discord" });
+        }
+      } catch (error) {
+        console.error("Error fetching user from Discord:", error);
+        return res.status(404).json({ message: "Target user not found or could not be fetched from Discord" });
+      }
     }
 
     // Check if user is already a member

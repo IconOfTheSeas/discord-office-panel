@@ -198,6 +198,25 @@ export class MemStorage implements IStorage {
     
     this.offices.set(id, updatedOffice);
     
+    // If the name was changed and we have a voice channel, update the channel name
+    if (updates.name && office.voiceChannelId) {
+      try {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Update the voice channel name
+        await discordModule.updateVoiceChannelName(
+          office.voiceChannelId, 
+          `Office-${updates.name}`
+        );
+        
+        console.log(`Updated voice channel name for office ${updates.name} with ID ${office.voiceChannelId}`);
+      } catch (error) {
+        console.error(`Failed to update voice channel name for office ${updates.name}:`, error);
+        // Continue even if voice channel update fails
+      }
+    }
+    
     // Get enriched office
     return this.getOfficeById(id) as Promise<Office>;
   }
@@ -318,4 +337,405 @@ export class MemStorage implements IStorage {
   }
 }
 
-export const storage = new MemStorage();
+import { db } from "./db";
+import { eq, and, ne } from "drizzle-orm";
+
+export class DatabaseStorage implements IStorage {
+  // User methods
+  async getUserById(id: string): Promise<User | undefined> {
+    const [user] = await db.select().from(users).where(eq(users.id, id));
+    return user;
+  }
+
+  async createUser(user: InsertUser): Promise<User> {
+    const [createdUser] = await db.insert(users).values(user).returning();
+    return createdUser;
+  }
+
+  async updateUser(id: string, updates: Partial<User>): Promise<User> {
+    const [updatedUser] = await db
+      .update(users)
+      .set(updates)
+      .where(eq(users.id, id))
+      .returning();
+    
+    return updatedUser;
+  }
+
+  async userHasOffice(userId: string): Promise<boolean> {
+    const [office] = await db
+      .select({ id: offices.id })
+      .from(offices)
+      .where(eq(offices.ownerId, userId));
+    
+    return Boolean(office);
+  }
+
+  // Office methods
+  async getAllOffices(): Promise<Office[]> {
+    const allOffices = await db.select().from(offices);
+    
+    // Enrich with owner, members, and memberCount
+    const enrichedOffices = await Promise.all(
+      allOffices.map(async (office) => {
+        const owner = await this.getUserById(office.ownerId);
+        const members = await this.getOfficeMembers(office.id);
+        
+        return {
+          ...office,
+          owner: owner || { 
+            id: office.ownerId, 
+            username: 'Unknown', 
+            discriminator: '0000',
+            isAdmin: false
+          },
+          members,
+          memberCount: members.length
+        };
+      })
+    );
+    
+    return enrichedOffices;
+  }
+
+  async getOfficeById(id: number): Promise<Office | undefined> {
+    const [office] = await db.select().from(offices).where(eq(offices.id, id));
+    
+    if (!office) {
+      return undefined;
+    }
+    
+    // Get owner
+    const owner = await this.getUserById(office.ownerId);
+    
+    // Get members
+    const members = await this.getOfficeMembers(id);
+    
+    return {
+      ...office,
+      owner: owner || { 
+        id: office.ownerId, 
+        username: 'Unknown', 
+        discriminator: '0000',
+        isAdmin: false
+      },
+      members,
+      memberCount: members.length
+    };
+  }
+
+  async getUserOffice(userId: string): Promise<Office | undefined> {
+    // Check if user is an owner of any office
+    const [userOffice] = await db
+      .select()
+      .from(offices)
+      .where(eq(offices.ownerId, userId));
+    
+    if (userOffice) {
+      return this.getOfficeById(userOffice.id);
+    }
+    
+    // If not an owner, check if they're a member of any office
+    const [officeMember] = await db
+      .select()
+      .from(officeMembers)
+      .where(eq(officeMembers.userId, userId));
+    
+    if (officeMember) {
+      return this.getOfficeById(officeMember.officeId);
+    }
+    
+    return undefined;
+  }
+
+  async getAvailableOffices(userId: string): Promise<Office[]> {
+    // Get the user's office first (if any)
+    const userOffice = await this.getUserOffice(userId);
+    
+    // Get all public offices or private offices where the user is a member
+    const availableOffices = await db
+      .select()
+      .from(offices)
+      .where(
+        (userOffice?.id !== undefined) 
+          ? and(ne(offices.id, userOffice.id), eq(offices.isPrivate, false))
+          : eq(offices.isPrivate, false)
+      );
+    
+    // Enrich with owner, members, and memberCount
+    const enrichedOffices = await Promise.all(
+      availableOffices.map(async (office) => {
+        const owner = await this.getUserById(office.ownerId);
+        const members = await this.getOfficeMembers(office.id);
+        
+        return {
+          ...office,
+          owner: owner || { 
+            id: office.ownerId, 
+            username: 'Unknown', 
+            discriminator: '0000',
+            isAdmin: false
+          },
+          members,
+          memberCount: members.length
+        };
+      })
+    );
+    
+    return enrichedOffices;
+  }
+
+  async createOffice(office: InsertOffice): Promise<Office> {
+    // Create the office in the database
+    const [createdOffice] = await db
+      .insert(offices)
+      .values(office)
+      .returning();
+    
+    // Create the voice channel on Discord
+    try {
+      // Import discord functions dynamically to avoid circular dependency
+      const discordModule = await import('./discord');
+      
+      // Use VC_CATEGORY_ID from environment if available
+      const categoryId = process.env.VC_CATEGORY_ID;
+      
+      // Create a voice channel with the office name
+      const channelId = await discordModule.createVoiceChannel(`Office-${createdOffice.name}`, categoryId);
+      
+      // Update the office with the channel ID
+      const [updatedOffice] = await db
+        .update(offices)
+        .set({ voiceChannelId: channelId })
+        .where(eq(offices.id, createdOffice.id))
+        .returning();
+      
+      console.log(`Created voice channel for office ${updatedOffice.name} with ID ${channelId}`);
+      
+      // Add the owner as an office member with isOwner=true
+      await this.addOfficeMember({
+        officeId: updatedOffice.id,
+        userId: updatedOffice.ownerId,
+        isOwner: true
+      });
+      
+      // Return the enriched office
+      return this.getOfficeById(updatedOffice.id) as Promise<Office>;
+    } catch (error) {
+      console.error(`Failed to create voice channel for office ${createdOffice.name}:`, error);
+      
+      // Add the owner as an office member even if voice channel creation fails
+      await this.addOfficeMember({
+        officeId: createdOffice.id,
+        userId: createdOffice.ownerId,
+        isOwner: true
+      });
+      
+      // Return the enriched office
+      return this.getOfficeById(createdOffice.id) as Promise<Office>;
+    }
+  }
+
+  async updateOffice(id: number, updates: Partial<Office>): Promise<Office> {
+    // Get the current office data
+    const [office] = await db
+      .select()
+      .from(offices)
+      .where(eq(offices.id, id));
+    
+    if (!office) {
+      throw new Error(`Office with ID ${id} not found`);
+    }
+    
+    // Update the office in the database
+    const [updatedOffice] = await db
+      .update(offices)
+      .set(updates)
+      .where(eq(offices.id, id))
+      .returning();
+    
+    // If the name was changed and we have a voice channel, update the channel name
+    if (updates.name && office.voiceChannelId) {
+      try {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Update the voice channel name
+        await discordModule.updateVoiceChannelName(
+          office.voiceChannelId, 
+          `Office-${updates.name}`
+        );
+        
+        console.log(`Updated voice channel name for office ${updates.name} with ID ${office.voiceChannelId}`);
+      } catch (error) {
+        console.error(`Failed to update voice channel name for office ${updates.name}:`, error);
+        // Continue even if voice channel update fails
+      }
+    }
+    
+    // Return the enriched office
+    return this.getOfficeById(id) as Promise<Office>;
+  }
+
+  async deleteOffice(id: number): Promise<void> {
+    // Get the office to access the voice channel ID
+    const [office] = await db
+      .select()
+      .from(offices)
+      .where(eq(offices.id, id));
+    
+    if (!office) {
+      throw new Error(`Office with ID ${id} not found`);
+    }
+    
+    // Delete all members first
+    await db
+      .delete(officeMembers)
+      .where(eq(officeMembers.officeId, id));
+    
+    // Delete the Discord voice channel if it exists
+    if (office.voiceChannelId) {
+      try {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Delete the voice channel
+        await discordModule.deleteVoiceChannel(office.voiceChannelId);
+        console.log(`Deleted voice channel for office ${office.name} with ID ${office.voiceChannelId}`);
+      } catch (error) {
+        console.error(`Failed to delete voice channel for office ${office.name}:`, error);
+        // Continue even if voice channel deletion fails
+      }
+    }
+    
+    // Delete the office
+    await db
+      .delete(offices)
+      .where(eq(offices.id, id));
+  }
+
+  // Office member methods
+  async getOfficeMembers(officeId: number): Promise<OfficeMember[]> {
+    const members = await db
+      .select()
+      .from(officeMembers)
+      .where(eq(officeMembers.officeId, officeId));
+    
+    // Enrich with user data
+    const enrichedMembers = await Promise.all(
+      members.map(async (member) => {
+        const user = await this.getUserById(member.userId);
+        
+        return {
+          ...member,
+          user: user || { 
+            id: member.userId, 
+            username: 'Unknown', 
+            discriminator: '0000',
+            isAdmin: false
+          }
+        };
+      })
+    );
+    
+    return enrichedMembers;
+  }
+
+  async isOfficeMember(officeId: number, userId: string): Promise<boolean> {
+    const [member] = await db
+      .select()
+      .from(officeMembers)
+      .where(
+        and(
+          eq(officeMembers.officeId, officeId),
+          eq(officeMembers.userId, userId)
+        )
+      );
+    
+    return Boolean(member);
+  }
+
+  async addOfficeMember(member: InsertOfficeMember): Promise<OfficeMember> {
+    // Add the member to the database
+    const [newMember] = await db
+      .insert(officeMembers)
+      .values(member)
+      .returning();
+    
+    // Grant permission to the voice channel if it exists
+    try {
+      const [office] = await db
+        .select()
+        .from(offices)
+        .where(eq(offices.id, member.officeId));
+      
+      if (office && office.voiceChannelId) {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Allow the user to connect and speak in the voice channel
+        await discordModule.updateChannelPermissions(office.voiceChannelId, member.userId);
+        console.log(`Granted voice permissions to user ${member.userId} for office ${office.name}`);
+      }
+    } catch (error) {
+      console.error(`Failed to update voice channel permissions for user ${member.userId}:`, error);
+      // Continue even if permission update fails
+    }
+    
+    // Get user data
+    const user = await this.getUserById(member.userId);
+    
+    // Return enriched member
+    return {
+      ...newMember,
+      user: user || { 
+        id: member.userId, 
+        username: 'Unknown', 
+        discriminator: '0000',
+        isAdmin: false
+      }
+    };
+  }
+
+  async removeOfficeMember(officeId: number, userId: string): Promise<void> {
+    // Revoke permissions from the voice channel if it exists
+    try {
+      const [office] = await db
+        .select()
+        .from(offices)
+        .where(eq(offices.id, officeId));
+      
+      if (office && office.voiceChannelId) {
+        // Import discord functions dynamically to avoid circular dependency
+        const discordModule = await import('./discord');
+        
+        // Explicitly deny connect and speak permissions for the removed user
+        // For deny, we want to deny CONNECT (1 << 20 = 1048576) and SPEAK (1 << 21 = 2097152)
+        // 1048576 + 2097152 = 3145728
+        await discordModule.updateChannelPermissions(
+          office.voiceChannelId, 
+          userId,
+          0, // No allows
+          3145728 // Deny connect and speak
+        );
+        console.log(`Revoked voice permissions from user ${userId} for office ${office.name}`);
+      }
+    } catch (error) {
+      console.error(`Failed to update voice channel permissions for user ${userId}:`, error);
+      // Continue even if permission update fails
+    }
+    
+    // Remove the member from the database
+    await db
+      .delete(officeMembers)
+      .where(
+        and(
+          eq(officeMembers.officeId, officeId),
+          eq(officeMembers.userId, userId)
+        )
+      );
+  }
+}
+
+// Change from MemStorage to DatabaseStorage
+export const storage = new DatabaseStorage();
